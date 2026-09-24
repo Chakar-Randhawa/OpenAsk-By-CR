@@ -27,19 +27,15 @@ service cloud.firestore {
     }
 
     function isQuestionOwner(questionId) {
-      return isSignedIn() && (
-        (exists(/databases/$(database)/documents/questionOwners/$(questionId)) &&
-         get(/databases/$(database)/documents/questionOwners/$(questionId)).data.ownerUid == request.auth.uid) ||
-        (resource.data.authorUid != null && resource.data.authorUid == request.auth.uid)
-      );
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/questionOwners/$(questionId)) &&
+        get(/databases/$(database)/documents/questionOwners/$(questionId)).data.ownerUid == request.auth.uid;
     }
 
     function isAnswerOwner(answerId) {
-      return isSignedIn() && (
-        (exists(/databases/$(database)/documents/answerOwners/$(answerId)) &&
-         get(/databases/$(database)/documents/answerOwners/$(answerId)).data.ownerUid == request.auth.uid) ||
-        (resource.data.authorUid != null && resource.data.authorUid == request.auth.uid)
-      );
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/answerOwners/$(answerId)) &&
+        get(/databases/$(database)/documents/answerOwners/$(answerId)).data.ownerUid == request.auth.uid;
     }
 
     // Default deny catch-all
@@ -351,13 +347,28 @@ service cloud.firestore {
         && request.resource.data.senderUid == request.auth.uid
         && request.resource.data.recipientUid != request.auth.uid
         && request.resource.data.isRead == false
-        && request.resource.data.type in ['answer', 'helpful', 'follow', 'category_question', 'report_status', 'comment', 'reply']
         && request.resource.data.title is string
         && request.resource.data.title.size() >= 3
         && request.resource.data.title.size() <= 100
         && request.resource.data.body is string
         && request.resource.data.body.size() >= 3
-        && request.resource.data.body.size() <= 500;
+        && request.resource.data.body.size() <= 500
+        && (
+          (
+            request.resource.data.type == 'follow'
+            && request.resource.data.targetType == 'user'
+            && exists(/databases/$(database)/documents/follows/$(request.auth.uid + '_' + request.resource.data.targetId))
+            && get(/databases/$(database)/documents/follows/$(request.auth.uid + '_' + request.resource.data.targetId)).data.followerUid == request.auth.uid
+            && get(/databases/$(database)/documents/follows/$(request.auth.uid + '_' + request.resource.data.targetId)).data.followingUid == request.resource.data.recipientUid
+          )
+          || (
+            request.resource.data.type == 'answer'
+            && request.resource.data.targetType == 'question'
+            && exists(/databases/$(database)/documents/questions/$(request.resource.data.targetId))
+            && get(/databases/$(database)/documents/questions/$(request.resource.data.targetId)).data.authorUid == request.resource.data.recipientUid
+            && get(/databases/$(database)/documents/questions/$(request.resource.data.targetId)).data.authorUid != request.auth.uid
+          )
+        );
 
       allow update: if isSignedIn()
         && resource.data.recipientUid == request.auth.uid
