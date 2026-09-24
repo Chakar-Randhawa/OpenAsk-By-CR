@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../core/models/question_model.dart';
+import '../../../core/widgets/app_avatar.dart';
+import '../../../core/widgets/loading_skeleton.dart';
+import '../../../core/widgets/stat_badge.dart';
 import '../../../app/providers.dart';
 
 class FeedScreen extends ConsumerStatefulWidget {
@@ -38,7 +41,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> with SingleTickerProvid
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: theme.colorScheme.primary.withOpacity(0.12),
+                color: theme.colorScheme.primary.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
               child: Icon(Icons.help_outline, color: theme.colorScheme.primary, size: 20),
@@ -55,6 +58,11 @@ class _FeedScreenState extends ConsumerState<FeedScreen> with SingleTickerProvid
             icon: const Icon(Icons.search),
             tooltip: 'Search Questions',
             onPressed: () => context.push('/search'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.bookmark_border),
+            tooltip: 'Bookmarks & Collections',
+            onPressed: () => context.push('/bookmarks'),
           ),
         ],
         bottom: TabBar(
@@ -117,7 +125,9 @@ class _QuestionListFeed extends ConsumerWidget {
                         feedType == 'following'
                             ? 'Follow more categories in Discover to populate this feed.'
                             : 'Be the first to ask a question!',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
                       ),
                       const SizedBox(height: 16),
                       if (feedType == 'following')
@@ -148,7 +158,11 @@ class _QuestionListFeed extends ConsumerWidget {
             },
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => ListView.separated(
+          itemCount: 5,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (_, __) => const QuestionCardSkeleton(),
+        ),
         error: (err, stack) => ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
@@ -192,22 +206,13 @@ class _QuestionFeedCard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Author and metadata row
             Row(
               children: [
-                CircleAvatar(
+                AppAvatar(
+                  photoUrl: question.authorPhotoUrl,
+                  displayName: question.authorDisplayName,
+                  isAnonymous: question.isAnonymous,
                   radius: 14,
-                  backgroundColor: theme.colorScheme.surfaceVariant,
-                  backgroundImage: (question.isAnonymous || question.authorPhotoUrl == null)
-                      ? null
-                      : NetworkImage(question.authorPhotoUrl!),
-                  child: (question.isAnonymous || question.authorPhotoUrl == null)
-                      ? Icon(
-                          question.isAnonymous ? Icons.masks : Icons.person,
-                          size: 16,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        )
-                      : null,
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -243,7 +248,6 @@ class _QuestionFeedCard extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 10),
-            // Title
             Text(
               question.title,
               style: theme.textTheme.titleMedium?.copyWith(
@@ -254,7 +258,6 @@ class _QuestionFeedCard extends ConsumerWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 6),
-            // Body preview
             Text(
               question.body,
               style: theme.textTheme.bodyMedium?.copyWith(
@@ -264,17 +267,16 @@ class _QuestionFeedCard extends ConsumerWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 12),
-            // Footer: answers, views, solved status
             Row(
               children: [
-                _StatBadge(
+                StatBadge(
                   icon: Icons.chat_bubble_outline,
                   count: '${question.answerCount}',
                   label: 'answers',
                   isHighlighted: question.answerCount > 0,
                 ),
                 const SizedBox(width: 14),
-                _StatBadge(
+                StatBadge(
                   icon: Icons.visibility_outlined,
                   count: '${question.viewCount}',
                   label: 'views',
@@ -284,7 +286,7 @@ class _QuestionFeedCard extends ConsumerWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.12),
+                      color: Colors.green.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: const Row(
@@ -305,41 +307,6 @@ class _QuestionFeedCard extends ConsumerWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _StatBadge extends StatelessWidget {
-  final IconData icon;
-  final String count;
-  final String label;
-  final bool isHighlighted;
-
-  const _StatBadge({
-    required this.icon,
-    required this.count,
-    required this.label,
-    this.isHighlighted = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = isHighlighted ? theme.colorScheme.primary : theme.colorScheme.outline;
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 14, color: color),
-        const SizedBox(width: 4),
-        Text(
-          '$count $label',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: color,
-            fontWeight: isHighlighted ? FontWeight.w600 : FontWeight.normal,
-          ),
-        ),
-      ],
     );
   }
 }

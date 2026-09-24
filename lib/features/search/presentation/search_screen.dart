@@ -34,7 +34,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
     try {
       final repo = ref.read(questionRepositoryProvider);
-      final results = await repo.searchQuestions(clean);
+      final results = await repo.searchQuestions(query: clean);
       if (mounted) {
         setState(() {
           _results = results;

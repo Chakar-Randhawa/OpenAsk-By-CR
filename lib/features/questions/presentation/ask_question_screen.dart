@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/models/category_model.dart';
+import '../../../core/models/question_model.dart';
+import '../../../core/services/local_storage_service.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/utils/validators.dart';
 
 class AskQuestionScreen extends ConsumerStatefulWidget {
   const AskQuestionScreen({super.key});
@@ -22,6 +26,13 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
   final List<String> _tags = [];
   bool _isSubmitting = false;
   String? _errorMessage;
+  List<QuestionModel> _similarQuestions = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDraft();
+  }
 
   @override
   void dispose() {
@@ -31,6 +42,31 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
     super.dispose();
   }
 
+  Future<void> _loadDraft() async {
+    final draft = await LocalStorageService.getQuestionDraft();
+    if (draft != null && mounted) {
+      setState(() {
+        _titleController.text = (draft['title'] as String?) ?? '';
+        _bodyController.text = (draft['body'] as String?) ?? '';
+        _isAnonymous = (draft['isAnonymous'] as bool?) ?? false;
+        final savedTags = draft['tags'] as List<dynamic>?;
+        if (savedTags != null) {
+          _tags.addAll(savedTags.map((e) => e.toString()));
+        }
+      });
+    }
+  }
+
+  Future<void> _saveDraft() async {
+    await LocalStorageService.saveQuestionDraft(
+      title: _titleController.text,
+      body: _bodyController.text,
+      categoryId: _selectedCategory?.id,
+      tags: _tags,
+      isAnonymous: _isAnonymous,
+    );
+  }
+
   void _addTag() {
     final raw = _tagController.text.trim().replaceAll('#', '').toLowerCase();
     if (raw.isNotEmpty && !_tags.contains(raw) && _tags.length < 5) {
@@ -38,6 +74,7 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
         _tags.add(raw);
         _tagController.clear();
       });
+      _saveDraft();
     }
   }
 
@@ -45,6 +82,23 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
     setState(() {
       _tags.remove(tag);
     });
+    _saveDraft();
+  }
+
+  Future<void> _checkForSimilarQuestions() async {
+    if (_titleController.text.trim().length < 8 || _selectedCategory == null) return;
+    try {
+      final repo = ref.read(questionRepositoryProvider);
+      final similar = await repo.findSimilarQuestions(
+        title: _titleController.text.trim(),
+        categoryId: _selectedCategory!.id,
+      );
+      if (mounted) {
+        setState(() {
+          _similarQuestions = similar;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _submit() async {
@@ -52,7 +106,7 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     if (_selectedCategory == null) {
-      setState(() => _errorMessage = 'Please select a category for your question.');
+      setState(() => _errorMessage = 'Please select a topic category for your question.');
       return;
     }
 
@@ -81,7 +135,17 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
         tags: _tags,
       );
 
-      // Invalidate feeds so new question appears immediately
+      // Clear draft on successful submit
+      await LocalStorageService.clearQuestionDraft();
+
+      // Log analytics
+      await AnalyticsService.logQuestionCreated(
+        categoryId: _selectedCategory!.id,
+        isAnonymous: _isAnonymous,
+        tagCount: _tags.length,
+      );
+
+      // Invalidate feeds
       ref.invalidate(feedQuestionsProvider('new'));
       ref.invalidate(feedQuestionsProvider('following'));
 
@@ -91,7 +155,7 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to publish question: $e';
+          _errorMessage = 'Failed to publish: $e';
           _isSubmitting = false;
         });
       }
@@ -126,16 +190,17 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.12),
+                    color: theme.colorScheme.error.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.red.shade300),
+                    border: Border.all(color: theme.colorScheme.error),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                      Icon(Icons.error_outline, color: theme.colorScheme.error, size: 20),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text(_errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+                        child: Text(_errorMessage!,
+                            style: TextStyle(color: theme.colorScheme.error, fontSize: 13)),
                       ),
                     ],
                   ),
@@ -143,134 +208,166 @@ class _AskQuestionScreenState extends ConsumerState<AskQuestionScreen> {
                 const SizedBox(height: 16),
               ],
 
-              // Anonymous toggle
-              Container(
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceVariant.withOpacity(0.4),
-                  borderRadius: BorderRadius.circular(12),
-                ),
+              // Anonymous posting switch
+              Card(
                 child: SwitchListTile(
                   title: const Text('Post Anonymously', style: TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: const Text(
-                    'Your public name and avatar will be hidden. Posts remain subject to community rules.',
+                    'Your identity and UID are never exposed in public documents.',
                     style: TextStyle(fontSize: 12),
                   ),
-                  secondary: Icon(
-                    _isAnonymous ? Icons.masks : Icons.person_outline,
-                    color: _isAnonymous ? theme.colorScheme.primary : null,
-                  ),
                   value: _isAnonymous,
-                  onChanged: (val) => setState(() => _isAnonymous = val),
+                  onChanged: (v) {
+                    setState(() => _isAnonymous = v);
+                    _saveDraft();
+                  },
                 ),
               ),
               const SizedBox(height: 16),
 
-              // Category Selector
-              Text('Category', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
+              // Category dropdown
               categoriesAsync.when(
-                data: (cats) {
+                data: (categories) {
                   return DropdownButtonFormField<CategoryModel>(
-                    decoration: InputDecoration(
-                      hintText: 'Select a category (50 topics)',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: const InputDecoration(
+                      labelText: 'Select Topic Category',
+                      prefixIcon: Icon(Icons.category_outlined),
                     ),
-                    value: _selectedCategory,
-                    items: cats.map((cat) {
-                      return DropdownMenuItem<CategoryModel>(
+                    initialValue: _selectedCategory,
+                    items: categories.map((cat) {
+                      return DropdownMenuItem(
                         value: cat,
-                        child: Text('${cat.icon}  ${cat.name}'),
+                        child: Text(cat.name),
                       );
                     }).toList(),
-                    onChanged: (cat) => setState(() => _selectedCategory = cat),
-                    validator: (val) => val == null ? 'Please select a category' : null,
+                    onChanged: (cat) {
+                      setState(() => _selectedCategory = cat);
+                      _checkForSimilarQuestions();
+                      _saveDraft();
+                    },
                   );
                 },
                 loading: () => const LinearProgressIndicator(),
-                error: (err, _) => Text('Error loading categories: $err'),
+                error: (_, __) => const Text('Failed to load categories'),
               ),
               const SizedBox(height: 16),
 
-              // Title input
-              Text('Question Title', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
+              // Question Title
               TextFormField(
                 controller: _titleController,
+                validator: Validators.questionTitle,
                 maxLength: 250,
-                decoration: InputDecoration(
-                  hintText: 'e.g., What is the most reliable way to handle offline sync in Flutter?',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                decoration: const InputDecoration(
+                  labelText: 'Question Title',
+                  hintText: 'What would you like to inquire about?',
+                  prefixIcon: Icon(Icons.title),
                 ),
-                validator: (val) {
-                  if (val == null || val.trim().length < 8) {
-                    return 'Title must be at least 8 characters long.';
+                onChanged: (v) {
+                  _saveDraft();
+                  if (v.length > 8 && _selectedCategory != null) {
+                    _checkForSimilarQuestions();
                   }
-                  if (val.trim().length > 250) {
-                    return 'Title cannot exceed 250 characters.';
-                  }
-                  return null;
                 },
               ),
-              const SizedBox(height: 12),
 
-              // Body input
-              Text('Details & Context', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
+              // Similar questions alert if detected
+              if (_similarQuestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.amber.shade300),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.lightbulb_outline, color: Colors.amber, size: 18),
+                          SizedBox(width: 6),
+                          Text(
+                            'Similar questions already exist:',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      ..._similarQuestions.map(
+                        (sq) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: InkWell(
+                            onTap: () => context.push('/question/${sq.id}'),
+                            child: Text(
+                              '• ${sq.title}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: theme.colorScheme.primary,
+                                decoration: TextDecoration.underline,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+
+              // Question Body
               TextFormField(
                 controller: _bodyController,
-                maxLines: 7,
+                validator: Validators.questionBody,
+                maxLines: 8,
+                minLines: 4,
                 maxLength: 10000,
-                decoration: InputDecoration(
-                  hintText: 'Provide details, what you have tried, edge cases, and expected outcome...',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                decoration: const InputDecoration(
+                  labelText: 'Question Details',
+                  hintText: 'Provide context, background, and what you have already tried...',
+                  alignLabelWithHint: true,
                 ),
-                validator: (val) {
-                  if (val == null || val.trim().length < 15) {
-                    return 'Please provide more details (at least 15 characters).';
-                  }
-                  return null;
-                },
+                onChanged: (v) => _saveDraft(),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
 
               // Tags input
-              Text('Tags (up to 5)', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _tagController,
-                      onSubmitted: (_) => _addTag(),
-                      decoration: InputDecoration(
-                        hintText: 'e.g. riverpod, firestore',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: const InputDecoration(
+                        labelText: 'Add Tag (e.g. flutter, privacy)',
+                        prefixIcon: Icon(Icons.tag),
                       ),
+                      onSubmitted: (_) => _addTag(),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: _tags.length < 5 ? _addTag : null,
-                    child: const Text('Add'),
+                  IconButton.filledTonal(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Add tag',
+                    onPressed: _addTag,
                   ),
                 ],
               ),
-              if (_tags.isNotEmpty) ...[
-                const SizedBox(height: 10),
+              const SizedBox(height: 8),
+
+              if (_tags.isNotEmpty)
                 Wrap(
                   spacing: 8,
                   runSpacing: 4,
-                  children: _tags.map((tag) {
+                  children: _tags.map((t) {
                     return Chip(
-                      label: Text('#$tag'),
-                      onDeleted: () => _removeTag(tag),
-                      deleteIcon: const Icon(Icons.close, size: 16),
+                      label: Text('#$t'),
+                      onDeleted: () => _removeTag(t),
                     );
                   }).toList(),
                 ),
-              ],
             ],
           ),
         ),

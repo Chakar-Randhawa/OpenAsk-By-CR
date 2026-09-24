@@ -12,6 +12,10 @@ import '../features/categories/presentation/category_detail_screen.dart';
 import '../features/search/presentation/search_screen.dart';
 import '../features/auth/presentation/auth_screen.dart';
 import '../features/settings/presentation/settings_screen.dart';
+import '../features/bookmarks/presentation/bookmarks_screen.dart';
+import '../features/achievements/presentation/achievements_screen.dart';
+import '../features/admin/presentation/admin_screen.dart';
+import '../features/onboarding/presentation/onboarding_screen.dart';
 import 'providers.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -146,6 +150,29 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/settings',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: '/bookmarks',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (context, state) => const BookmarksScreen(),
+      ),
+      GoRoute(
+        path: '/achievements/:uid',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (context, state) {
+          final uid = state.pathParameters['uid'] ?? '';
+          return AchievementsScreen(uid: uid);
+        },
+      ),
+      GoRoute(
+        path: '/admin',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (context, state) => const AdminScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (context, state) => const OnboardingScreen(),
       ),
     ],
   );

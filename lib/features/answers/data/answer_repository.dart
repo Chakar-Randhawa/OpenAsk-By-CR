@@ -2,8 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/models/answer_model.dart';
 
 abstract class AnswerRepository {
-  Future<List<AnswerModel>> fetchAnswersForQuestion(String questionId);
+  Future<List<AnswerModel>> fetchAnswersForQuestion(String questionId, {String sortBy = 'helpful'});
   Stream<List<AnswerModel>> streamAnswers(String questionId);
+  Future<bool> isAnswerOwner(String answerId, String uid);
   Future<String> createAnswer({
     required String questionId,
     required String authorUid,
@@ -11,6 +12,15 @@ abstract class AnswerRepository {
     String? authorPhotoUrl,
     required bool isAnonymous,
     required String body,
+  });
+  Future<void> updateAnswer({
+    required String answerId,
+    required String editorUid,
+    required String body,
+  });
+  Future<void> deleteAnswer({
+    required String answerId,
+    required String authorUid,
   });
   Future<int> voteAnswer({
     required String answerId,
@@ -30,15 +40,45 @@ class FirestoreAnswerRepository implements AnswerRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   @override
-  Future<List<AnswerModel>> fetchAnswersForQuestion(String questionId) async {
+  Future<bool> isAnswerOwner(String answerId, String uid) async {
+    try {
+      final ownerDoc = await _firestore.collection('answerOwners').doc(answerId).get();
+      if (ownerDoc.exists && ownerDoc.data()?['ownerUid'] == uid) {
+        return true;
+      }
+      final ansDoc = await _firestore.collection('answers').doc(answerId).get();
+      if (ansDoc.exists && ansDoc.data()?['authorUid'] == uid) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  @override
+  Future<List<AnswerModel>> fetchAnswersForQuestion(String questionId, {String sortBy = 'helpful'}) async {
     final snap = await _firestore
         .collection('answers')
         .where('questionId', isEqualTo: questionId)
-        .orderBy('createdAt', descending: false)
+        .where('status', isEqualTo: 'active')
         .limit(100)
         .get();
 
-    return snap.docs.map((d) => AnswerModel.fromMap(d.data(), d.id)).toList();
+    final answers = snap.docs.map((d) => AnswerModel.fromMap(d.data(), d.id)).toList();
+
+    // Client-side authoritative sorting
+    if (sortBy == 'helpful') {
+      answers.sort((a, b) {
+        if (a.isHelpful && !b.isHelpful) return -1;
+        if (!a.isHelpful && b.isHelpful) return 1;
+        return b.voteCount.compareTo(a.voteCount);
+      });
+    } else if (sortBy == 'newest') {
+      answers.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    } else if (sortBy == 'oldest') {
+      answers.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    }
+
+    return answers;
   }
 
   @override
@@ -46,10 +86,18 @@ class FirestoreAnswerRepository implements AnswerRepository {
     return _firestore
         .collection('answers')
         .where('questionId', isEqualTo: questionId)
-        .orderBy('createdAt', descending: false)
+        .where('status', isEqualTo: 'active')
         .limit(100)
         .snapshots()
-        .map((snap) => snap.docs.map((d) => AnswerModel.fromMap(d.data(), d.id)).toList());
+        .map((snap) {
+      final list = snap.docs.map((d) => AnswerModel.fromMap(d.data(), d.id)).toList();
+      list.sort((a, b) {
+        if (a.isHelpful && !b.isHelpful) return -1;
+        if (!a.isHelpful && b.isHelpful) return 1;
+        return b.voteCount.compareTo(a.voteCount);
+      });
+      return list;
+    });
   }
 
   @override
@@ -61,13 +109,25 @@ class FirestoreAnswerRepository implements AnswerRepository {
     required bool isAnonymous,
     required String body,
   }) async {
-    final docRef = _firestore.collection('answers').doc();
+    final batch = _firestore.batch();
+    final answerRef = _firestore.collection('answers').doc();
+    final ownerRef = _firestore.collection('answerOwners').doc(answerRef.id);
     final now = DateTime.now();
 
+    // 1. Private answer owner mapping
+    batch.set(ownerRef, {
+      'id': answerRef.id,
+      'ownerUid': authorUid,
+      'questionId': questionId,
+      'isAnonymous': isAnonymous,
+      'createdAt': now.toIso8601String(),
+    });
+
+    // 2. Public answer document
     final answer = AnswerModel(
-      id: docRef.id,
+      id: answerRef.id,
       questionId: questionId,
-      authorUid: authorUid,
+      authorUid: isAnonymous ? null : authorUid,
       isAnonymous: isAnonymous,
       authorDisplayName: isAnonymous ? 'Anonymous' : authorDisplayName,
       authorPhotoUrl: isAnonymous ? null : authorPhotoUrl,
@@ -75,13 +135,16 @@ class FirestoreAnswerRepository implements AnswerRepository {
       voteCount: 0,
       helpfulCount: 0,
       isHelpful: false,
+      commentCount: 0,
       status: 'active',
       createdAt: now,
+      updatedAt: now,
     );
 
-    await docRef.set(answer.toMap());
+    batch.set(answerRef, answer.toMap());
+    await batch.commit();
 
-    // Spark Architecture: Dispatch secure in-app notification directly to question author
+    // 3. Dispatch secure in-app notification directly to question author
     try {
       final questionSnap = await _firestore.collection('questions').doc(questionId).get();
       if (questionSnap.exists) {
@@ -89,7 +152,6 @@ class FirestoreAnswerRepository implements AnswerRepository {
         final qAuthorUid = qData['authorUid'] as String?;
         final qTitle = qData['title'] as String? ?? 'your question';
 
-        // Notify question author if not answering own question
         if (qAuthorUid != null && qAuthorUid != authorUid) {
           final notifRef = _firestore.collection('notifications').doc();
           await notifRef.set({
@@ -106,11 +168,42 @@ class FirestoreAnswerRepository implements AnswerRepository {
           });
         }
       }
-    } catch (_) {
-      // In-app notification creation is non-blocking for answer submission
+    } catch (_) {}
+
+    return answerRef.id;
+  }
+
+  @override
+  Future<void> updateAnswer({
+    required String answerId,
+    required String editorUid,
+    required String body,
+  }) async {
+    final isOwner = await isAnswerOwner(answerId, editorUid);
+    if (!isOwner) {
+      throw Exception('Unauthorized: You do not own this answer.');
     }
 
-    return docRef.id;
+    await _firestore.collection('answers').doc(answerId).update({
+      'body': body.trim(),
+      'updatedAt': DateTime.now().toIso8601String(),
+    });
+  }
+
+  @override
+  Future<void> deleteAnswer({
+    required String answerId,
+    required String authorUid,
+  }) async {
+    final isOwner = await isAnswerOwner(answerId, authorUid);
+    if (!isOwner) {
+      throw Exception('Unauthorized: You do not own this answer.');
+    }
+
+    final batch = _firestore.batch();
+    batch.delete(_firestore.collection('answers').doc(answerId));
+    batch.delete(_firestore.collection('answerOwners').doc(answerId));
+    await batch.commit();
   }
 
   @override
@@ -126,7 +219,6 @@ class FirestoreAnswerRepository implements AnswerRepository {
       final voteSnap = await transaction.get(voteRef);
 
       if (!voteSnap.exists) {
-        // New vote
         transaction.set(voteRef, {
           'id': voteDocId,
           'targetId': answerId,
@@ -139,11 +231,9 @@ class FirestoreAnswerRepository implements AnswerRepository {
       } else {
         final currentValue = (voteSnap.data()?['value'] ?? 0) as int;
         if (currentValue == voteValue) {
-          // Remove vote
           transaction.delete(voteRef);
           return 0;
         } else {
-          // Switch vote
           transaction.update(voteRef, {
             'value': voteValue,
             'updatedAt': DateTime.now().toIso8601String(),
@@ -209,7 +299,7 @@ class FirestoreAnswerRepository implements AnswerRepository {
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
-    // Spark Architecture: Dispatch secure in-app notification to answer author
+    // In-app notification to answer author if known and not self
     if (newHelpful) {
       final answerAuthorUid = answerSnap.data()?['authorUid'] as String?;
       if (answerAuthorUid != null && answerAuthorUid != questionAuthorUid) {

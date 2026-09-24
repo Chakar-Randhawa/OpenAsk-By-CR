@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import '../../../app/providers.dart';
 import '../../../core/models/question_model.dart';
 import '../../../core/models/answer_model.dart';
+import '../../../core/services/deep_link_service.dart';
+import '../../../core/services/analytics_service.dart';
+import '../../../core/widgets/app_avatar.dart';
 
 final questionDetailProvider = FutureProvider.family<QuestionModel?, String>((ref, id) async {
-  return ref.watch(questionRepositoryProvider).getQuestionById(id);
+  final authUser = ref.watch(authStateProvider).value;
+  return ref.watch(questionRepositoryProvider).getQuestionById(id, viewerUid: authUser?.uid);
 });
 
 final answersStreamProvider = StreamProvider.family<List<AnswerModel>, String>((ref, questionId) {
@@ -26,7 +31,8 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
   final TextEditingController _answerController = TextEditingController();
   bool _isAnswerAnonymous = false;
   bool _isSubmittingAnswer = false;
-  bool _isSaved = false;
+  bool _isQuestionAuthor = false;
+  bool _checkedOwnership = false;
 
   @override
   void initState() {
@@ -43,10 +49,21 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
   void _recordView() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final authUser = ref.read(authStateProvider).value;
-      if (authUser != null) {
-        ref.read(questionRepositoryProvider).recordView(widget.questionId, authUser.uid);
-      }
+      ref.read(questionRepositoryProvider).recordView(widget.questionId, authUser?.uid);
+      AnalyticsService.logQuestionViewed(widget.questionId);
     });
+  }
+
+  Future<void> _checkOwnership(String currentUid) async {
+    if (_checkedOwnership) return;
+    final repo = ref.read(questionRepositoryProvider);
+    final isOwner = await repo.isQuestionOwner(widget.questionId, currentUid);
+    if (mounted) {
+      setState(() {
+        _isQuestionAuthor = isOwner;
+        _checkedOwnership = true;
+      });
+    }
   }
 
   Future<void> _submitAnswer(QuestionModel question) async {
@@ -80,6 +97,11 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
         body: text,
       );
 
+      await AnalyticsService.logAnswerCreated(
+        questionId: question.id,
+        isAnonymous: _isAnswerAnonymous,
+      );
+
       _answerController.clear();
       setState(() {
         _isSubmittingAnswer = false;
@@ -101,11 +123,70 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
     }
   }
 
+  void _shareQuestion() {
+    final url = DeepLinkService.buildQuestionUrl(widget.questionId);
+    Clipboard.setData(ClipboardData(text: url));
+    AnalyticsService.logQuestionShared(widget.questionId);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Link copied to clipboard: $url')),
+    );
+  }
+
+  void _showAddCommentDialog(String targetType, String targetId) {
+    final commentController = TextEditingController();
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add Comment'),
+        content: TextField(
+          controller: commentController,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: 'Clarify or inquire respectfully...',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final authUser = ref.read(authStateProvider).value;
+              if (authUser == null) {
+                Navigator.of(ctx).pop();
+                context.push('/auth');
+                return;
+              }
+              final text = commentController.text.trim();
+              if (text.length >= 2) {
+                final profile = await ref.read(currentProfileProvider.future);
+                final repo = ref.read(commentRepositoryProvider);
+                await repo.addComment(
+                  targetType: targetType,
+                  targetId: targetId,
+                  authorUid: authUser.uid,
+                  authorDisplayName: profile?.displayName ?? 'Member',
+                  authorPhotoUrl: profile?.photoUrl,
+                  text: text,
+                );
+                if (mounted) Navigator.of(ctx).pop();
+              }
+            },
+            child: const Text('Comment'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showReportDialog(String targetType, String targetId) {
     String selectedReason = 'spam';
     final detailsController = TextEditingController();
 
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -120,7 +201,8 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                   DropdownMenuItem(value: 'spam', child: Text('Spam or advertising')),
                   DropdownMenuItem(value: 'harassment', child: Text('Harassment or hate speech')),
                   DropdownMenuItem(value: 'misinformation', child: Text('Misinformation')),
-                  DropdownMenuItem(value: 'inappropriate', child: Text('Inappropriate content')),
+                  DropdownMenuItem(value: 'nsfw', child: Text('Inappropriate / NSFW')),
+                  DropdownMenuItem(value: 'copyright', child: Text('Copyright violation')),
                 ],
                 onChanged: (val) {
                   if (val != null) setDialogState(() => selectedReason = val);
@@ -131,7 +213,6 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                 controller: detailsController,
                 decoration: const InputDecoration(
                   hintText: 'Additional details (optional)',
-                  border: OutlineInputBorder(),
                 ),
                 maxLines: 3,
               ),
@@ -139,14 +220,14 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () => Navigator.of(ctx).pop(),
               child: const Text('Cancel'),
             ),
             ElevatedButton(
               onPressed: () async {
                 final authUser = ref.read(authStateProvider).value;
                 if (authUser == null) {
-                  Navigator.pop(ctx);
+                  Navigator.of(ctx).pop();
                   context.push('/auth');
                   return;
                 }
@@ -158,10 +239,11 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                   reason: selectedReason,
                   details: detailsController.text,
                 );
+                await AnalyticsService.logReportCreated(targetType);
                 if (mounted) {
-                  Navigator.pop(ctx);
+                  Navigator.of(ctx).pop();
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Thank you. The report has been received.')),
+                    const SnackBar(content: Text('Report received for moderation review.')),
                   );
                 }
               },
@@ -178,35 +260,69 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
     final theme = Theme.of(context);
     final questionAsync = ref.watch(questionDetailProvider(widget.questionId));
     final answersAsync = ref.watch(answersStreamProvider(widget.questionId));
+    final commentsAsync = ref.watch(commentsStreamProvider(widget.questionId));
     final authUser = ref.watch(authStateProvider).value;
+
+    if (authUser != null && !_checkedOwnership) {
+      _checkOwnership(authUser.uid);
+    }
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Question'),
         actions: [
           IconButton(
-            icon: Icon(_isSaved ? Icons.bookmark : Icons.bookmark_border),
-            tooltip: 'Save Question',
-            onPressed: () async {
-              if (authUser == null) {
-                context.push('/auth');
-                return;
-              }
-              final repo = ref.read(questionRepositoryProvider);
-              final newSaved = await repo.toggleSaveQuestion(widget.questionId, authUser.uid);
-              setState(() => _isSaved = newSaved);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(newSaved ? 'Question saved' : 'Question removed from saved')),
-              );
-            },
+            icon: const Icon(Icons.share_outlined),
+            tooltip: 'Share Question Link',
+            onPressed: _shareQuestion,
+          ),
+          questionAsync.when(
+            data: (q) => IconButton(
+              icon: Icon(q?.isSaved == true ? Icons.bookmark : Icons.bookmark_border),
+              tooltip: 'Save Question',
+              onPressed: () async {
+                if (authUser == null) {
+                  context.push('/auth');
+                  return;
+                }
+                final repo = ref.read(questionRepositoryProvider);
+                final saved = await repo.toggleSaveQuestion(widget.questionId, authUser.uid);
+                ref.invalidate(questionDetailProvider(widget.questionId));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(saved ? 'Question saved' : 'Removed from saved')),
+                );
+              },
+            ),
+            loading: () => const SizedBox(),
+            error: (_, __) => const SizedBox(),
           ),
           PopupMenuButton<String>(
-            onSelected: (val) {
+            onSelected: (val) async {
               if (val == 'report') {
                 _showReportDialog('question', widget.questionId);
+              } else if (val == 'close' && _isQuestionAuthor) {
+                final repo = ref.read(questionRepositoryProvider);
+                await repo.updateQuestionStatus(
+                  questionId: widget.questionId,
+                  userUid: authUser!.uid,
+                  newStatus: 'closed',
+                );
+                ref.invalidate(questionDetailProvider(widget.questionId));
+              } else if (val == 'resolve' && _isQuestionAuthor) {
+                final repo = ref.read(questionRepositoryProvider);
+                await repo.updateQuestionStatus(
+                  questionId: widget.questionId,
+                  userUid: authUser!.uid,
+                  newStatus: 'resolved',
+                );
+                ref.invalidate(questionDetailProvider(widget.questionId));
               }
             },
             itemBuilder: (_) => [
+              if (_isQuestionAuthor) ...[
+                const PopupMenuItem(value: 'resolve', child: Text('Mark as Resolved')),
+                const PopupMenuItem(value: 'close', child: Text('Close Question')),
+              ],
               const PopupMenuItem(value: 'report', child: Text('Report Question')),
             ],
           ),
@@ -226,7 +342,7 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                 child: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
-                    // Category & Date
+                    // Category & Status
                     Row(
                       children: [
                         InkWell(
@@ -236,11 +352,31 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                             visualDensity: VisualDensity.compact,
                           ),
                         ),
+                        const SizedBox(width: 8),
+                        if (question.status == 'resolved') ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Text('Resolved',
+                                style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                        ] else if (question.status == 'closed') ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Text('Closed',
+                                style: TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
                         const Spacer(),
-                        Text(
-                          formattedDate,
-                          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
-                        ),
+                        Text(formattedDate,
+                            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -255,14 +391,11 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                     // Author info
                     Row(
                       children: [
-                        CircleAvatar(
+                        AppAvatar(
+                          photoUrl: question.authorPhotoUrl,
+                          displayName: question.authorDisplayName,
+                          isAnonymous: question.isAnonymous,
                           radius: 16,
-                          backgroundImage: (!question.isAnonymous && question.authorPhotoUrl != null)
-                              ? NetworkImage(question.authorPhotoUrl!)
-                              : null,
-                          child: (question.isAnonymous || question.authorPhotoUrl == null)
-                              ? Icon(question.isAnonymous ? Icons.masks : Icons.person, size: 18)
-                              : null,
                         ),
                         const SizedBox(width: 10),
                         Column(
@@ -272,8 +405,10 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                               question.isAnonymous ? 'Anonymous' : question.authorDisplayName,
                               style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                             ),
-                            if (!question.isAnonymous)
-                              Text('Author', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+                            Text(
+                              question.isAnonymous ? 'Verified Private Author' : 'Question Author',
+                              style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
+                            ),
                           ],
                         ),
                       ],
@@ -293,17 +428,58 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                         spacing: 8,
                         children: question.tags.map((t) => Chip(label: Text('#$t'))).toList(),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
                     ],
 
+                    // Comments on question
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          icon: const Icon(Icons.mode_comment_outlined, size: 16),
+                          label: const Text('Add Clarification Comment'),
+                          onPressed: () => _showAddCommentDialog('question', question.id),
+                        ),
+                      ],
+                    ),
+
+                    commentsAsync.when(
+                      data: (comments) {
+                        if (comments.isEmpty) return const SizedBox();
+                        return Container(
+                          margin: const EdgeInsets.only(top: 8, bottom: 8),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: comments.map((c) {
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Text('• ${c.authorDisplayName}: ${c.text}',
+                                    style: const TextStyle(fontSize: 12)),
+                              );
+                            }).toList(),
+                          ),
+                        );
+                      },
+                      loading: () => const SizedBox(),
+                      error: (_, __) => const SizedBox(),
+                    ),
+
                     const Divider(),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
 
                     // Answers Section Header
                     answersAsync.when(
-                      data: (answers) => Text(
-                        '${answers.length} Answers',
-                        style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                      data: (answers) => Row(
+                        children: [
+                          Text(
+                            '${answers.length} Answers',
+                            style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                        ],
                       ),
                       loading: () => const Text('Loading answers...'),
                       error: (e, _) => Text('Error loading answers: $e'),
@@ -321,7 +497,7 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                               children: [
                                 Icon(Icons.chat_bubble_outline, size: 48, color: theme.colorScheme.outline),
                                 const SizedBox(height: 8),
-                                const Text('No answers yet. Share your knowledge!'),
+                                const Text('No answers yet. Share your expertise!'),
                               ],
                             ),
                           );
@@ -332,6 +508,7 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
                             return _AnswerItemCard(
                               answer: answer,
                               question: question,
+                              isQuestionAuthor: _isQuestionAuthor,
                               currentUid: authUser?.uid,
                               onReport: () => _showReportDialog('answer', answer.id),
                             );
@@ -346,53 +523,64 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
               ),
 
               // Answer Input Bottom Bar
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surface,
-                  border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
-                ),
-                child: SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        children: [
-                          Checkbox(
-                            value: _isAnswerAnonymous,
-                            onChanged: (v) => setState(() => _isAnswerAnonymous = v ?? false),
-                          ),
-                          const Text('Answer anonymously', style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _answerController,
-                              maxLines: 4,
-                              minLines: 1,
-                              decoration: const InputDecoration(
-                                hintText: 'Write a helpful answer...',
-                                border: OutlineInputBorder(),
-                                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              if (question.status == 'active')
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
+                  ),
+                  child: SafeArea(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            Checkbox(
+                              value: _isAnswerAnonymous,
+                              onChanged: (v) => setState(() => _isAnswerAnonymous = v ?? false),
+                            ),
+                            const Text('Answer anonymously', style: TextStyle(fontSize: 12)),
+                          ],
+                        ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _answerController,
+                                maxLines: 4,
+                                minLines: 1,
+                                decoration: const InputDecoration(
+                                  hintText: 'Write a helpful answer...',
+                                  border: OutlineInputBorder(),
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            onPressed: _isSubmittingAnswer ? null : () => _submitAnswer(question),
-                            child: _isSubmittingAnswer
-                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Text('Post'),
-                          ),
-                        ],
-                      ),
-                    ],
+                            const SizedBox(width: 8),
+                            ElevatedButton(
+                              onPressed: _isSubmittingAnswer ? null : () => _submitAnswer(question),
+                              child: _isSubmittingAnswer
+                                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Text('Post'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  alignment: Alignment.center,
+                  child: Text(
+                    'This question is ${question.status}. New answers are disabled.',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                 ),
-              ),
             ],
           );
         },
@@ -406,12 +594,14 @@ class _QuestionDetailScreenState extends ConsumerState<QuestionDetailScreen> {
 class _AnswerItemCard extends ConsumerStatefulWidget {
   final AnswerModel answer;
   final QuestionModel question;
+  final bool isQuestionAuthor;
   final String? currentUid;
   final VoidCallback onReport;
 
   const _AnswerItemCard({
     required this.answer,
     required this.question,
+    required this.isQuestionAuthor,
     required this.currentUid,
     required this.onReport,
   });
@@ -423,7 +613,6 @@ class _AnswerItemCard extends ConsumerStatefulWidget {
 class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
   int _userVote = 0;
   int _netVoteCount = 0;
-  bool _isLoadingVote = true;
 
   @override
   void initState() {
@@ -437,9 +626,9 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
     final count = await answerRepo.getAnswerVoteCount(widget.answer.id);
     if (widget.currentUid != null) {
       final vote = await answerRepo.getUserVote(widget.answer.id, widget.currentUid!);
-      if (mounted) setState(() { _userVote = vote; _netVoteCount = count; _isLoadingVote = false; });
+      if (mounted) setState(() { _userVote = vote; _netVoteCount = count; });
     } else {
-      if (mounted) setState(() { _netVoteCount = count; _isLoadingVote = false; });
+      if (mounted) setState(() => _netVoteCount = count);
     }
   }
 
@@ -461,14 +650,13 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isQuestionAuthor = widget.currentUid == widget.question.authorUid;
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
       elevation: 0,
       color: widget.answer.isHelpful
-          ? Colors.green.withOpacity(0.06)
-          : theme.colorScheme.surfaceVariant.withOpacity(0.3),
+          ? Colors.green.withValues(alpha: 0.06)
+          : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
@@ -480,17 +668,13 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Helpful badge & Header
             Row(
               children: [
-                CircleAvatar(
-                  radius: 12,
-                  backgroundImage: (!widget.answer.isAnonymous && widget.answer.authorPhotoUrl != null)
-                      ? NetworkImage(widget.answer.authorPhotoUrl!)
-                      : null,
-                  child: (widget.answer.isAnonymous || widget.answer.authorPhotoUrl == null)
-                      ? Icon(widget.answer.isAnonymous ? Icons.masks : Icons.person, size: 14)
-                      : null,
+                AppAvatar(
+                  photoUrl: widget.answer.authorPhotoUrl,
+                  displayName: widget.answer.authorDisplayName,
+                  isAnonymous: widget.answer.isAnonymous,
+                  radius: 14,
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -502,7 +686,7 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.15),
+                      color: Colors.green.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Row(
@@ -510,7 +694,8 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
                       children: [
                         Icon(Icons.check_circle, size: 14, color: Colors.green),
                         SizedBox(width: 4),
-                        Text('Helpful Solution', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.green)),
+                        Text('Helpful Solution',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.green)),
                       ],
                     ),
                   ),
@@ -534,14 +719,13 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
             // Footer: Voting and Helpful toggle
             Row(
               children: [
-                // Upvote button
                 IconButton(
                   icon: Icon(
                     Icons.thumb_up,
                     size: 18,
                     color: _userVote == 1 ? theme.colorScheme.primary : theme.colorScheme.outline,
                   ),
-                  tooltip: 'Upvote (+10 reputation)',
+                  tooltip: 'Upvote',
                   onPressed: () => _vote(1),
                 ),
                 Text(
@@ -551,20 +735,19 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
                     color: _userVote != 0 ? theme.colorScheme.primary : null,
                   ),
                 ),
-                // Downvote button
                 IconButton(
                   icon: Icon(
                     Icons.thumb_down,
                     size: 18,
                     color: _userVote == -1 ? Colors.red : theme.colorScheme.outline,
                   ),
-                  tooltip: 'Downvote (-2 reputation)',
+                  tooltip: 'Downvote',
                   onPressed: () => _vote(-1),
                 ),
                 const Spacer(),
 
                 // Mark as helpful action (only for question author)
-                if (isQuestionAuthor)
+                if (widget.isQuestionAuthor)
                   TextButton.icon(
                     icon: Icon(
                       widget.answer.isHelpful ? Icons.check_circle : Icons.check_circle_outline,
@@ -583,8 +766,9 @@ class _AnswerItemCardState extends ConsumerState<_AnswerItemCard> {
                       await answerRepo.markAnswerHelpful(
                         questionId: widget.question.id,
                         answerId: widget.answer.id,
-                        questionAuthorUid: widget.question.authorUid,
+                        questionAuthorUid: widget.currentUid ?? '',
                       );
+                      ref.invalidate(questionDetailProvider(widget.question.id));
                     },
                   ),
               ],
