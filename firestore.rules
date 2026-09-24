@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ----------------------------------------------------------------------
-    // HELPER FUNCTIONS
+    // HELPER FUNCTIONS & AUTHENTICATION PREDICATES
     // ----------------------------------------------------------------------
 
     function isSignedIn() {
@@ -18,6 +18,30 @@ service cloud.firestore {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isModeratorOrAdmin() {
+      return isSignedIn() && (
+        request.auth.token.admin == true ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['moderator', 'admin'])
+      );
+    }
+
+    function isQuestionOwner(questionId) {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/questionOwners/$(questionId)) &&
+         get(/databases/$(database)/documents/questionOwners/$(questionId)).data.ownerUid == request.auth.uid) ||
+        (resource.data.authorUid != null && resource.data.authorUid == request.auth.uid)
+      );
+    }
+
+    function isAnswerOwner(answerId) {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/answerOwners/$(answerId)) &&
+         get(/databases/$(database)/documents/answerOwners/$(answerId)).data.ownerUid == request.auth.uid) ||
+        (resource.data.authorUid != null && resource.data.authorUid == request.auth.uid)
+      );
+    }
+
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
@@ -26,24 +50,52 @@ service cloud.firestore {
     // ----------------------------------------------------------------------
     // CATEGORIES (Application Configuration Data)
     // - Public read for all clients
-    // - Writes strictly locked to admin token (Spark-compatible)
+    // - Writes strictly locked to admin
     // ----------------------------------------------------------------------
     match /categories/{categoryId} {
       allow read: if true;
-      allow write: if isSignedIn() && request.auth.token.admin == true;
+      allow write: if isModeratorOrAdmin();
+    }
+
+    // ----------------------------------------------------------------------
+    // PRIVATE QUESTION OWNERSHIP
+    // - STRICT PRIVACY: Public users cannot read
+    // - Authenticated author can read own ownership record
+    // - Created upon question creation
+    // ----------------------------------------------------------------------
+    match /questionOwners/{questionId} {
+      allow read: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isModeratorOrAdmin());
+      allow create: if isSignedIn()
+        && isValidId(questionId)
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // ----------------------------------------------------------------------
+    // PRIVATE ANSWER OWNERSHIP
+    // - STRICT PRIVACY: Public users cannot read
+    // - Authenticated author can read own ownership record
+    // ----------------------------------------------------------------------
+    match /answerOwners/{answerId} {
+      allow read: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isModeratorOrAdmin());
+      allow create: if isSignedIn()
+        && isValidId(answerId)
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
     }
 
     // ----------------------------------------------------------------------
     // USERS (Profiles)
     // - Anyone can read public profiles
-    // - User can create their initial profile (with 0 reputation, role 'member')
-    // - User can update ONLY displayName, username, bio, photoUrl, updatedAt
-    // - User CANNOT tamper with reputation, role, or aggregate counters
-    // - Private device tokens and settings are strictly owner-only
+    // - User can create initial profile (0 reputation, 'member' role)
+    // - User CANNOT tamper with reputation, role, or server counters
+    // - Moderator/Admin can update status (suspend, ban)
     // ----------------------------------------------------------------------
     match /users/{userId} {
       allow read: if true;
-      
+
       allow create: if isOwner(userId)
         && request.resource.data.keys().hasAll(['id', 'displayName', 'username', 'reputation', 'role', 'createdAt'])
         && request.resource.data.id == userId
@@ -53,14 +105,19 @@ service cloud.firestore {
         && request.resource.data.username.size() >= 3
         && request.resource.data.username.size() <= 30;
 
-      allow update: if isOwner(userId)
-        // Ensure user cannot forge reputation, role, or server-controlled counters
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reputation', 'role', 'id', 'createdAt', 'questionCount', 'answerCount', 'followersCount', 'followingCount', 'status'])
-        && request.resource.data.displayName is string
-        && request.resource.data.displayName.size() >= 2
-        && request.resource.data.displayName.size() <= 50;
+      allow update: if (
+        // Owner updating editable profile fields
+        (isOwner(userId)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reputation', 'role', 'id', 'createdAt', 'questionCount', 'answerCount', 'followersCount', 'followingCount', 'status'])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() >= 2
+          && request.resource.data.displayName.size() <= 50)
+        ||
+        // Moderator/Admin setting status
+        (isModeratorOrAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+      );
 
-      allow delete: if false;
+      allow delete: if false; // Soft delete via status = 'deleted'
 
       // Private device tokens (FCM) - never readable by other users
       match /deviceTokens/{tokenId} {
@@ -88,17 +145,22 @@ service cloud.firestore {
     // ----------------------------------------------------------------------
     // QUESTIONS
     // - Public read for all questions
-    // - Authenticated user can create with valid schema
-    // - Author can update title, body, tags, updatedAt OR toggle helpfulAnswerId
-    // - Author CANNOT manipulate voteCount, answerCount, viewCount, authorUid, createdAt
-    // - Author can delete own question
+    // - Authenticated creation
+    // - Anonymous posting: authorUid MUST NOT be in public doc when isAnonymous == true
+    // - Author can update title, body, tags OR helpfulAnswerId OR status
+    // - Protected counters (voteCount, answerCount, viewCount) cannot be forged
     // ----------------------------------------------------------------------
     match /questions/{questionId} {
       allow read: if true;
 
       allow create: if isSignedIn()
         && isValidId(questionId)
-        && request.resource.data.authorUid == request.auth.uid
+        // Anonymous check: authorUid MUST NOT be set if anonymous
+        && (
+          (request.resource.data.isAnonymous == true && (!('authorUid' in request.resource.data) || request.resource.data.authorUid == null || request.resource.data.authorUid == ''))
+          ||
+          (request.resource.data.isAnonymous == false && request.resource.data.authorUid == request.auth.uid)
+        )
         && request.resource.data.title is string
         && request.resource.data.title.size() >= 8
         && request.resource.data.title.size() <= 250
@@ -108,25 +170,33 @@ service cloud.firestore {
         && request.resource.data.voteCount == 0
         && request.resource.data.answerCount == 0
         && request.resource.data.viewCount == 0
-        && request.resource.data.status == 'active';
+        && request.resource.data.status in ['active', 'resolved', 'closed'];
 
-      allow update: if isSignedIn()
-        && resource.data.authorUid == request.auth.uid
-        && (
-          // Content edit
-          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'createdAt', 'voteCount', 'answerCount', 'viewCount', 'status', 'id'])
-            && request.resource.data.title is string
-            && request.resource.data.title.size() >= 8
-            && request.resource.data.body is string
-            && request.resource.data.body.size() >= 15)
-          ||
-          // Author setting/clearing accepted helpful answer ID
-          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['helpfulAnswerId', 'updatedAt']))
-        );
+      allow update: if isSignedIn() && (
+        // Question owner updating content
+        (isQuestionOwner(questionId)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'createdAt', 'voteCount', 'answerCount', 'viewCount', 'id'])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 8
+          && request.resource.data.body is string
+          && request.resource.data.body.size() >= 15)
+        ||
+        // Question owner setting accepted answer
+        (isQuestionOwner(questionId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['helpfulAnswerId', 'updatedAt']))
+        ||
+        // Question owner closing or resolving
+        (isQuestionOwner(questionId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status in ['active', 'closed', 'resolved'])
+        ||
+        // Moderator removing question
+        (isModeratorOrAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+      );
 
-      allow delete: if isSignedIn() && resource.data.authorUid == request.auth.uid;
+      allow delete: if isQuestionOwner(questionId) || isModeratorOrAdmin();
 
-      // Question views subcollection: authenticated user can log their view deterministically
+      // Question views subcollection: log view deterministically
       match /views/{viewerUid} {
         allow read: if isSignedIn();
         allow write: if isOwner(viewerUid);
@@ -135,18 +205,21 @@ service cloud.firestore {
 
     // ----------------------------------------------------------------------
     // ANSWERS
-    // - Anyone can read answers
-    // - Authenticated user can post answer
+    // - Public read for all answers
+    // - Anonymous posting: authorUid omitted when isAnonymous == true
     // - Author can update body only
-    // - Author CANNOT tamper with voteCount, helpfulCount, authorUid, questionId
-    // - Question author can toggle isHelpful flag on the answer
+    // - Question author can toggle isHelpful flag
     // ----------------------------------------------------------------------
     match /answers/{answerId} {
       allow read: if true;
 
       allow create: if isSignedIn()
         && isValidId(answerId)
-        && request.resource.data.authorUid == request.auth.uid
+        && (
+          (request.resource.data.isAnonymous == true && (!('authorUid' in request.resource.data) || request.resource.data.authorUid == null || request.resource.data.authorUid == ''))
+          ||
+          (request.resource.data.isAnonymous == false && request.resource.data.authorUid == request.auth.uid)
+        )
         && request.resource.data.body is string
         && request.resource.data.body.size() >= 5
         && request.resource.data.body.size() <= 10000
@@ -156,15 +229,50 @@ service cloud.firestore {
 
       allow update: if isSignedIn() && (
         // Author editing body
-        (resource.data.authorUid == request.auth.uid
+        (isAnswerOwner(answerId)
           && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'questionId', 'createdAt', 'voteCount', 'helpfulCount', 'id']))
         ||
-        // Question author marking answer helpful
+        // Question owner marking answer helpful
         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isHelpful', 'updatedAt'])
-          && get(/databases/$(database)/documents/questions/$(resource.data.questionId)).data.authorUid == request.auth.uid)
+          && isQuestionOwner(resource.data.questionId))
+        ||
+        // Moderator removing answer
+        (isModeratorOrAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
       );
 
-      allow delete: if isSignedIn() && resource.data.authorUid == request.auth.uid;
+      allow delete: if isAnswerOwner(answerId) || isModeratorOrAdmin();
+    }
+
+    // ----------------------------------------------------------------------
+    // COMMENTS
+    // - Public read for comments
+    // - Authenticated user can create comment
+    // - Author can edit or soft-delete comment
+    // ----------------------------------------------------------------------
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && isValidId(commentId)
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 2
+        && request.resource.data.text.size() <= 1000;
+
+      allow update: if isSignedIn() && (
+        (resource.data.authorUid == request.auth.uid
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'targetId', 'targetType', 'createdAt', 'id']))
+        ||
+        (isModeratorOrAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+      );
+
+      allow delete: if isSignedIn() && (resource.data.authorUid == request.auth.uid || isModeratorOrAdmin());
+    }
+
+    match /commentLikes/{likeId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
     }
 
     // ----------------------------------------------------------------------
@@ -215,7 +323,7 @@ service cloud.firestore {
     }
 
     // ----------------------------------------------------------------------
-    // SAVED QUESTIONS (Bookmarks)
+    // SAVED QUESTIONS & COLLECTIONS (Bookmarks)
     // ----------------------------------------------------------------------
     match /savedQuestions/{saveId} {
       allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
@@ -224,11 +332,17 @@ service cloud.firestore {
       allow update: if false;
     }
 
+    match /collections/{collectionId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
     // ----------------------------------------------------------------------
-    // NOTIFICATIONS (In-app notifications under Spark)
+    // NOTIFICATIONS
     // - Recipient can read and mark as read
-    // - Authenticated sender can create notification for recipient safely:
-    //   Must match senderUid, recipient cannot be self, type in whitelist
+    // - Sender must be signed in, recipient != sender, type in whitelist
     // ----------------------------------------------------------------------
     match /notifications/{notificationId} {
       allow read: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
@@ -237,7 +351,7 @@ service cloud.firestore {
         && request.resource.data.senderUid == request.auth.uid
         && request.resource.data.recipientUid != request.auth.uid
         && request.resource.data.isRead == false
-        && request.resource.data.type in ['answer', 'helpful', 'follow', 'category_question', 'report_status']
+        && request.resource.data.type in ['answer', 'helpful', 'follow', 'category_question', 'report_status', 'comment', 'reply']
         && request.resource.data.title is string
         && request.resource.data.title.size() >= 3
         && request.resource.data.title.size() <= 100
@@ -260,7 +374,17 @@ service cloud.firestore {
         && request.resource.data.reporterUid == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.reason is string;
-      allow read: if isSignedIn() && resource.data.reporterUid == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.reporterUid == request.auth.uid || isModeratorOrAdmin());
+      allow update: if isModeratorOrAdmin();
+      allow delete: if isModeratorOrAdmin();
+    }
+
+    // ----------------------------------------------------------------------
+    // AUDIT LOGS (Moderation & Administrative actions)
+    // ----------------------------------------------------------------------
+    match /auditLogs/{logId} {
+      allow read: if isModeratorOrAdmin();
+      allow create: if isModeratorOrAdmin() && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
 
