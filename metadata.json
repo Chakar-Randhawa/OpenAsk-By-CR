@@ -1,0 +1,6 @@
+{
+  "name": "OpenAsk — Global Social Q&A Platform",
+  "description": "A global social knowledge and discussion platform with real-time questions, answers, categories, following, and voting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

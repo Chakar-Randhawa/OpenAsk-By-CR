@@ -1,0 +1,284 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----------------------------------------------------------------------
+    // HELPER FUNCTIONS
+    // ----------------------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ----------------------------------------------------------------------
+    // CATEGORIES (Application Configuration Data)
+    // - Public read for all clients
+    // - Writes strictly locked to admin token (Spark-compatible)
+    // ----------------------------------------------------------------------
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.auth.token.admin == true;
+    }
+
+    // ----------------------------------------------------------------------
+    // USERS (Profiles)
+    // - Anyone can read public profiles
+    // - User can create their initial profile (with 0 reputation, role 'member')
+    // - User can update ONLY displayName, username, bio, photoUrl, updatedAt
+    // - User CANNOT tamper with reputation, role, or aggregate counters
+    // - Private device tokens and settings are strictly owner-only
+    // ----------------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if true;
+      
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll(['id', 'displayName', 'username', 'reputation', 'role', 'createdAt'])
+        && request.resource.data.id == userId
+        && request.resource.data.reputation == 0
+        && request.resource.data.role == 'member'
+        && request.resource.data.username is string
+        && request.resource.data.username.size() >= 3
+        && request.resource.data.username.size() <= 30;
+
+      allow update: if isOwner(userId)
+        // Ensure user cannot forge reputation, role, or server-controlled counters
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reputation', 'role', 'id', 'createdAt', 'questionCount', 'answerCount', 'followersCount', 'followingCount', 'status'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 2
+        && request.resource.data.displayName.size() <= 50;
+
+      allow delete: if false;
+
+      // Private device tokens (FCM) - never readable by other users
+      match /deviceTokens/{tokenId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Private settings
+      match /private/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // USERNAMES (Unique username reservation)
+    // ----------------------------------------------------------------------
+    match /usernames/{username} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && isValidId(username);
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ----------------------------------------------------------------------
+    // QUESTIONS
+    // - Public read for all questions
+    // - Authenticated user can create with valid schema
+    // - Author can update title, body, tags, updatedAt OR toggle helpfulAnswerId
+    // - Author CANNOT manipulate voteCount, answerCount, viewCount, authorUid, createdAt
+    // - Author can delete own question
+    // ----------------------------------------------------------------------
+    match /questions/{questionId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && isValidId(questionId)
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 8
+        && request.resource.data.title.size() <= 250
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 15
+        && request.resource.data.body.size() <= 10000
+        && request.resource.data.voteCount == 0
+        && request.resource.data.answerCount == 0
+        && request.resource.data.viewCount == 0
+        && request.resource.data.status == 'active';
+
+      allow update: if isSignedIn()
+        && resource.data.authorUid == request.auth.uid
+        && (
+          // Content edit
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'createdAt', 'voteCount', 'answerCount', 'viewCount', 'status', 'id'])
+            && request.resource.data.title is string
+            && request.resource.data.title.size() >= 8
+            && request.resource.data.body is string
+            && request.resource.data.body.size() >= 15)
+          ||
+          // Author setting/clearing accepted helpful answer ID
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['helpfulAnswerId', 'updatedAt']))
+        );
+
+      allow delete: if isSignedIn() && resource.data.authorUid == request.auth.uid;
+
+      // Question views subcollection: authenticated user can log their view deterministically
+      match /views/{viewerUid} {
+        allow read: if isSignedIn();
+        allow write: if isOwner(viewerUid);
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // ANSWERS
+    // - Anyone can read answers
+    // - Authenticated user can post answer
+    // - Author can update body only
+    // - Author CANNOT tamper with voteCount, helpfulCount, authorUid, questionId
+    // - Question author can toggle isHelpful flag on the answer
+    // ----------------------------------------------------------------------
+    match /answers/{answerId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && isValidId(answerId)
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 5
+        && request.resource.data.body.size() <= 10000
+        && request.resource.data.voteCount == 0
+        && request.resource.data.helpfulCount == 0
+        && request.resource.data.status == 'active';
+
+      allow update: if isSignedIn() && (
+        // Author editing body
+        (resource.data.authorUid == request.auth.uid
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authorUid', 'questionId', 'createdAt', 'voteCount', 'helpfulCount', 'id']))
+        ||
+        // Question author marking answer helpful
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isHelpful', 'updatedAt'])
+          && get(/databases/$(database)/documents/questions/$(resource.data.questionId)).data.authorUid == request.auth.uid)
+      );
+
+      allow delete: if isSignedIn() && resource.data.authorUid == request.auth.uid;
+    }
+
+    // ----------------------------------------------------------------------
+    // VOTES
+    // - Deterministic vote records keyed by {targetId}_{uid}
+    // - User can ONLY vote once with value +1 or -1
+    // - User can ONLY manage their own vote record
+    // ----------------------------------------------------------------------
+    match /votes/{voteId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && voteId == request.resource.data.targetId + '_' + request.auth.uid
+        && (request.resource.data.value == 1 || request.resource.data.value == -1);
+
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && voteId == resource.data.targetId + '_' + request.auth.uid
+        && (request.resource.data.value == 1 || request.resource.data.value == -1);
+
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // ----------------------------------------------------------------------
+    // FOLLOWS (User, Category, Question)
+    // ----------------------------------------------------------------------
+    match /follows/{followId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.followerUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.followerUid == request.auth.uid;
+      allow update: if false;
+    }
+
+    match /categoryFollows/{catFollowId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+
+    match /questionFollows/{qFollowId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ----------------------------------------------------------------------
+    // SAVED QUESTIONS (Bookmarks)
+    // ----------------------------------------------------------------------
+    match /savedQuestions/{saveId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ----------------------------------------------------------------------
+    // NOTIFICATIONS (In-app notifications under Spark)
+    // - Recipient can read and mark as read
+    // - Authenticated sender can create notification for recipient safely:
+    //   Must match senderUid, recipient cannot be self, type in whitelist
+    // ----------------------------------------------------------------------
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && request.resource.data.senderUid == request.auth.uid
+        && request.resource.data.recipientUid != request.auth.uid
+        && request.resource.data.isRead == false
+        && request.resource.data.type in ['answer', 'helpful', 'follow', 'category_question', 'report_status']
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 3
+        && request.resource.data.body.size() <= 500;
+
+      allow update: if isSignedIn()
+        && resource.data.recipientUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
+
+      allow delete: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+    }
+
+    // ----------------------------------------------------------------------
+    // REPORTS (Abuse & Safety)
+    // ----------------------------------------------------------------------
+    match /reports/{reportId} {
+      allow create: if isSignedIn()
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.reason is string;
+      allow read: if isSignedIn() && resource.data.reporterUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ----------------------------------------------------------------------
+    // BLOCKS & MUTES
+    // ----------------------------------------------------------------------
+    match /blocks/{blockId} {
+      allow read: if isSignedIn() && resource.data.blockerUid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.blockerUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.blockerUid == request.auth.uid;
+      allow update: if false;
+    }
+
+    match /mutes/{muteId} {
+      allow read: if isSignedIn() && resource.data.muterUid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.muterUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.muterUid == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}

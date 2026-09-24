@@ -1,0 +1,257 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Public and internal user profile document",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "maxLength": 50, "description": "Display name" },
+        "username": { "type": "string", "maxLength": 30, "pattern": "^[a-zA-Z0-9_]+$", "description": "Unique username handle" },
+        "email": { "type": "string", "description": "User email address" },
+        "photoUrl": { "type": "string", "description": "Avatar photo URL" },
+        "bio": { "type": "string", "maxLength": 300, "description": "User biography" },
+        "createdAt": { "type": "string", "description": "Account creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Account update timestamp" },
+        "followersCount": { "type": "number", "description": "Count of followers" },
+        "followingCount": { "type": "number", "description": "Count of following users" },
+        "questionCount": { "type": "number", "description": "Count of questions asked" },
+        "answerCount": { "type": "number", "description": "Count of answers written" },
+        "reputation": { "type": "number", "description": "Community reputation score" },
+        "isActive": { "type": "boolean", "description": "Active status" },
+        "isBanned": { "type": "boolean", "description": "Moderation ban status" }
+      },
+      "required": ["uid", "displayName", "username", "createdAt", "followersCount", "followingCount", "reputation"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Discussion category item",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 60, "description": "Category name" },
+        "slug": { "type": "string", "maxLength": 60, "description": "URL slug" },
+        "description": { "type": "string", "maxLength": 300, "description": "Category description" },
+        "icon": { "type": "string", "description": "Icon identifier" },
+        "followerCount": { "type": "number", "description": "Follower count" },
+        "questionCount": { "type": "number", "description": "Question count" },
+        "isActive": { "type": "boolean", "description": "Active status" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["name", "slug", "description", "icon", "followerCount", "questionCount"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "A question posted to the community",
+      "type": "object",
+      "properties": {
+        "questionId": { "type": "string", "description": "Unique question ID" },
+        "authorUid": { "type": "string", "description": "Author UID" },
+        "isAnonymous": { "type": "boolean", "description": "Whether posted anonymously" },
+        "authorDisplayName": { "type": "string", "description": "Author display name" },
+        "authorPhotoUrl": { "type": "string", "description": "Author avatar URL" },
+        "title": { "type": "string", "minLength": 5, "maxLength": 200, "description": "Question headline" },
+        "body": { "type": "string", "minLength": 10, "maxLength": 5000, "description": "Detailed question text" },
+        "categoryId": { "type": "string", "description": "Category document ID" },
+        "categoryName": { "type": "string", "description": "Category display name" },
+        "tagIds": { "type": "string", "description": "Comma-delimited or JSON string of tags" },
+        "imageUrls": { "type": "string", "description": "Attached image URL" },
+        "answerCount": { "type": "number", "description": "Number of answers" },
+        "viewCount": { "type": "number", "description": "Number of views" },
+        "voteCount": { "type": "number", "description": "Net vote score" },
+        "followerCount": { "type": "number", "description": "Count of users following question" },
+        "helpfulAnswerId": { "type": "string", "description": "ID of accepted helpful answer" },
+        "status": { "type": "string", "enum": ["active", "closed", "hidden"], "description": "Status" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last update timestamp" }
+      },
+      "required": ["authorUid", "isAnonymous", "title", "body", "categoryId", "categoryName", "answerCount", "status"]
+    },
+    "Answer": {
+      "title": "Answer",
+      "description": "An answer to a question",
+      "type": "object",
+      "properties": {
+        "answerId": { "type": "string", "description": "Unique answer ID" },
+        "questionId": { "type": "string", "description": "Associated question ID" },
+        "authorUid": { "type": "string", "description": "Author UID" },
+        "isAnonymous": { "type": "boolean", "description": "Whether posted anonymously" },
+        "authorDisplayName": { "type": "string", "description": "Author display name" },
+        "authorPhotoUrl": { "type": "string", "description": "Author avatar URL" },
+        "body": { "type": "string", "minLength": 5, "maxLength": 5000, "description": "Answer text content" },
+        "voteCount": { "type": "number", "description": "Net vote count" },
+        "helpfulCount": { "type": "number", "description": "Helpful count" },
+        "isHelpful": { "type": "boolean", "description": "Marked helpful by question author" },
+        "status": { "type": "string", "enum": ["active", "hidden"], "description": "Status" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Update timestamp" }
+      },
+      "required": ["questionId", "authorUid", "isAnonymous", "body", "voteCount", "helpfulCount", "status"]
+    },
+    "Vote": {
+      "title": "Vote",
+      "description": "User vote on an answer",
+      "type": "object",
+      "properties": {
+        "answerId": { "type": "string", "description": "Answer ID" },
+        "questionId": { "type": "string", "description": "Question ID" },
+        "uid": { "type": "string", "description": "Voter UID" },
+        "voteType": { "type": "number", "enum": [1, -1], "description": "1 for upvote, -1 for downvote" },
+        "createdAt": { "type": "string", "description": "Vote timestamp" }
+      },
+      "required": ["answerId", "questionId", "uid", "voteType"]
+    },
+    "Follow": {
+      "title": "Follow",
+      "description": "User-to-user follow relationship",
+      "type": "object",
+      "properties": {
+        "targetUid": { "type": "string", "description": "User being followed" },
+        "followerUid": { "type": "string", "description": "User who is following" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["targetUid", "followerUid"]
+    },
+    "CategoryFollow": {
+      "title": "Category Follow",
+      "description": "Category follow relationship",
+      "type": "object",
+      "properties": {
+        "categoryId": { "type": "string", "description": "Category ID" },
+        "uid": { "type": "string", "description": "Follower UID" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["categoryId", "uid"]
+    },
+    "QuestionFollow": {
+      "title": "Question Follow",
+      "description": "Question follow relationship",
+      "type": "object",
+      "properties": {
+        "questionId": { "type": "string", "description": "Question ID" },
+        "uid": { "type": "string", "description": "Follower UID" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["questionId", "uid"]
+    },
+    "SavedQuestion": {
+      "title": "Saved Question",
+      "description": "Bookmarked question bookmark",
+      "type": "object",
+      "properties": {
+        "questionId": { "type": "string", "description": "Question ID" },
+        "uid": { "type": "string", "description": "User UID" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["questionId", "uid"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification for a user",
+      "type": "object",
+      "properties": {
+        "recipientUid": { "type": "string", "description": "Recipient UID" },
+        "senderUid": { "type": "string", "description": "Triggering user UID" },
+        "senderName": { "type": "string", "description": "Triggering user name" },
+        "type": { "type": "string", "enum": ["answer", "vote", "helpful", "follow", "category_question", "question_answer", "system"], "description": "Notification type" },
+        "title": { "type": "string", "description": "Title" },
+        "body": { "type": "string", "description": "Body message" },
+        "targetType": { "type": "string", "enum": ["question", "answer", "user", "category"], "description": "Target type" },
+        "targetId": { "type": "string", "description": "Target entity ID" },
+        "isRead": { "type": "boolean", "description": "Read status" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["recipientUid", "type", "title", "body", "targetType", "targetId", "isRead"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Content moderation report",
+      "type": "object",
+      "properties": {
+        "reporterUid": { "type": "string", "description": "Reporter UID" },
+        "targetType": { "type": "string", "enum": ["question", "answer", "user"], "description": "Reported target type" },
+        "targetId": { "type": "string", "description": "Reported target ID" },
+        "reason": { "type": "string", "description": "Reason category" },
+        "details": { "type": "string", "maxLength": 500, "description": "Additional details" },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "dismissed", "actioned"], "description": "Resolution status" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["reporterUid", "targetType", "targetId", "reason", "status"]
+    },
+    "Block": {
+      "title": "Block",
+      "description": "User block record",
+      "type": "object",
+      "properties": {
+        "blockerUid": { "type": "string", "description": "User who initiated block" },
+        "blockedUid": { "type": "string", "description": "User blocked" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["blockerUid", "blockedUid"]
+    },
+    "Mute": {
+      "title": "Mute",
+      "description": "User mute record",
+      "type": "object",
+      "properties": {
+        "muterUid": { "type": "string", "description": "User who initiated mute" },
+        "mutedUid": { "type": "string", "description": "User muted" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["muterUid", "mutedUid"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Discussion categories"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Questions posted to OpenAsk"
+    },
+    "/answers/{answerId}": {
+      "schema": "Answer",
+      "description": "Answers to questions"
+    },
+    "/votes/{voteId}": {
+      "schema": "Vote",
+      "description": "Votes on answers"
+    },
+    "/follows/{followId}": {
+      "schema": "Follow",
+      "description": "User-to-user follow relationships"
+    },
+    "/categoryFollows/{catFollowId}": {
+      "schema": "CategoryFollow",
+      "description": "Category follow relationships"
+    },
+    "/questionFollows/{qFollowId}": {
+      "schema": "QuestionFollow",
+      "description": "Question follow relationships"
+    },
+    "/savedQuestions/{saveId}": {
+      "schema": "SavedQuestion",
+      "description": "Saved questions bookmarks"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User in-app notifications"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Moderation reports"
+    },
+    "/blocks/{blockId}": {
+      "schema": "Block",
+      "description": "Blocked users"
+    },
+    "/mutes/{muteId}": {
+      "schema": "Mute",
+      "description": "Muted users"
+    }
+  }
+}
