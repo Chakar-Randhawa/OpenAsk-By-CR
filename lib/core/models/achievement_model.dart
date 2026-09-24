@@ -34,15 +34,17 @@ class AchievementModel {
   }
 
   factory AchievementModel.fromMap(Map<String, dynamic> map, String docId) {
+    final rawUnlockedAt = map['unlockedAt'];
+
     return AchievementModel(
       id: docId,
-      name: map['name'] ?? '',
-      description: map['description'] ?? '',
-      icon: map['icon'] ?? '🏆',
-      category: map['category'] ?? 'contribution',
-      requiredThreshold: (map['requiredThreshold'] ?? 0) as int,
-      isUnlocked: map['isUnlocked'] ?? false,
-      unlockedAt: map['unlockedAt'] != null ? DateTime.tryParse(map['unlockedAt']) : null,
+      name: (map['name'] as String?) ?? '',
+      description: (map['description'] as String?) ?? '',
+      icon: (map['icon'] as String?) ?? '🏆',
+      category: (map['category'] as String?) ?? 'contribution',
+      requiredThreshold: (map['requiredThreshold'] as int?) ?? 0,
+      isUnlocked: map['isUnlocked'] as bool? ?? false,
+      unlockedAt: rawUnlockedAt != null ? DateTime.tryParse(rawUnlockedAt.toString()) : null,
     );
   }
 }

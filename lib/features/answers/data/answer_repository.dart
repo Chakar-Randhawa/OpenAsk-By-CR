@@ -299,28 +299,11 @@ class FirestoreAnswerRepository implements AnswerRepository {
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
-    // In-app notification to answer author if known and not self
-    if (newHelpful) {
-      final answerAuthorUid = answerSnap.data()?['authorUid'] as String?;
-      if (answerAuthorUid != null && answerAuthorUid != questionAuthorUid) {
-        try {
-          final notifRef = _firestore.collection('notifications').doc();
-          await notifRef.set({
-            'id': notifRef.id,
-            'recipientUid': answerAuthorUid,
-            'senderUid': questionAuthorUid,
-            'type': 'helpful',
-            'title': 'Solution Marked Helpful!',
-            'body': 'Your answer was selected as the helpful solution.',
-            'targetType': 'question',
-            'targetId': questionId,
-            'isRead': false,
-            'createdAt': DateTime.now().toIso8601String(),
-          });
-        } catch (_) {}
-      }
-    }
-
+    // Secure Spark-only architecture: helpful notifications are intentionally not
+    // created from the client because they require server-side validation of the actual
+    // answer relationship. The question/answer relationship is already persisted in the
+    // answer record, but the notification payload cannot be tied to a concrete answerId
+    // without server-side enforcement.
     return newHelpful;
   }
 }

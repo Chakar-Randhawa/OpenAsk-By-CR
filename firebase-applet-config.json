@@ -1,12 +1,12 @@
 {
-  "projectId": "quaint-vector-3h7nb",
-  "appId": "1:610793651298:web:18c60b4925120c43bd653b",
-  "apiKey": "AIzaSyARKs9609d7VST895wGQCNQJrT9z4NJmXA",
-  "authDomain": "quaint-vector-3h7nb.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-ff0278cf-d279-4a90-a255-a17748adae4b",
-  "storageBucket": "quaint-vector-3h7nb.firebasestorage.app",
-  "messagingSenderId": "610793651298",
+  "projectId": "REPLACE_WITH_PROJECT_ID",
+  "appId": "REPLACE_WITH_WEB_APP_ID",
+  "apiKey": "REPLACE_WITH_API_KEY",
+  "authDomain": "REPLACE_WITH_AUTH_DOMAIN",
+  "firestoreDatabaseId": "REPLACE_WITH_FIRESTORE_DATABASE_ID",
+  "storageBucket": "REPLACE_WITH_STORAGE_BUCKET",
+  "messagingSenderId": "REPLACE_WITH_MESSAGING_SENDER_ID",
   "measurementId": "",
-  "oAuthClientId": "610793651298-n003k1sjo1rcpko9t0g9p29r0lbbhabd.apps.googleusercontent.com",
+  "oAuthClientId": "REPLACE_WITH_OAUTH_CLIENT_ID",
   "recaptchaSiteKey": ""
 }

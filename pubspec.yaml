@@ -26,6 +26,7 @@ dependencies:
   flutter_secure_storage: ^9.2.1
   shared_preferences: ^2.2.3
   connectivity_plus: ^6.0.3
+  app_links: ^6.3.2
   uuid: ^4.4.0
   cupertino_icons: ^1.0.8
 

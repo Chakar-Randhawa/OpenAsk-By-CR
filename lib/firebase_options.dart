@@ -22,25 +22,25 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyARKs9609d7VST895wGQCNQJrT9z4NJmXA',
-    appId: '1:610793651298:web:18c60b4925120c43bd653b',
-    messagingSenderId: '610793651298',
-    projectId: 'quaint-vector-3h7nb',
-    authDomain: 'quaint-vector-3h7nb.firebaseapp.com',
+    apiKey: 'REPLACE_WITH_WEB_API_KEY',
+    appId: 'REPLACE_WITH_WEB_APP_ID',
+    messagingSenderId: 'REPLACE_WITH_MESSAGING_SENDER_ID',
+    projectId: 'REPLACE_WITH_PROJECT_ID',
+    authDomain: 'REPLACE_WITH_AUTH_DOMAIN',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyARKs9609d7VST895wGQCNQJrT9z4NJmXA',
-    appId: '1:610793651298:android:openask_android_app',
-    messagingSenderId: '610793651298',
-    projectId: 'quaint-vector-3h7nb',
+    apiKey: 'REPLACE_WITH_ANDROID_API_KEY',
+    appId: 'REPLACE_WITH_ANDROID_APP_ID',
+    messagingSenderId: 'REPLACE_WITH_MESSAGING_SENDER_ID',
+    projectId: 'REPLACE_WITH_PROJECT_ID',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyARKs9609d7VST895wGQCNQJrT9z4NJmXA',
-    appId: '1:610793651298:ios:openask_ios_app',
-    messagingSenderId: '610793651298',
-    projectId: 'quaint-vector-3h7nb',
+    apiKey: 'REPLACE_WITH_IOS_API_KEY',
+    appId: 'REPLACE_WITH_IOS_APP_ID',
+    messagingSenderId: 'REPLACE_WITH_MESSAGING_SENDER_ID',
+    projectId: 'REPLACE_WITH_PROJECT_ID',
     iosBundleId: 'com.openask.app',
   );
 }
